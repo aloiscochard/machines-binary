@@ -1,5 +1,5 @@
 name:                machines-binary
-version:             0.3.0.2
+version:             0.3.0.3
 synopsis:            Binary utilities for the machines library
 homepage:            http://github.com/aloiscochard/machines-binary
 license:             Apache-2.0
@@ -18,6 +18,6 @@ library
     Data.Binary.Machine
   build-depends:       
     base >=4.6 && < 5
-    , binary              >= 0.7      && < 0.8
+    , binary              >= 0.7      && < 0.9
     , bytestring          >= 0.10     && < 0.11
     , machines            >= 0.2      && < 0.7
