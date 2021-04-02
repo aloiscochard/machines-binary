@@ -1,5 +1,5 @@
 name:                machines-binary
-version:             0.5.0.0
+version:             7.0.0.0
 synopsis:            Binary utilities for the machines library
 homepage:            http://github.com/aloiscochard/machines-binary
 license:             Apache-2.0
