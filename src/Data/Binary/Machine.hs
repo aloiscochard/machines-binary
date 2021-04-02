@@ -1,24 +1,48 @@
 {-# LANGUAGE Rank2Types #-}
 
-module Data.Binary.Machine (
-  -- * Get
-    processGet
-  , processGetL
-  , streamGet
-  , streamGetL
-  -- * Put
-  , processPut
-  -- * Types
-  , DecodingError(..)
-  ) where
+module Data.Binary.Machine
+  ( -- * Get
+    processGet,
+    processDecoder,
+    processGetL,
+    stackGet,
+    streamGet,
+    streamGetL,
 
-import Data.ByteString (ByteString)
-import Data.Binary.Get (Decoder(..), Get, ByteOffset, pushChunk, runGetIncremental)
+    -- * Put
+    processPut,
+
+    -- * Types
+    DecodingError (..),
+  )
+where
+
+import Data.Binary.Get (ByteOffset, Decoder (..), Get, pushChunk, runGetIncremental)
 import Data.Binary.Put (Put, runPut)
-import Data.Machine (Plan, ProcessT, Process, auto, repeatedly, yield, echo)
-import Data.Machine.Stack (Stack(..), stack, push, pop)
-
+import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as Lazy
+import Data.Machine (Is (Refl), MachineT (..), Plan, Process, ProcessT, Step (Await, Yield), auto, echo, repeatedly, stopped, yield)
+import Data.Machine.Stack (Stack (..), pop, push, stack)
+
+processPut :: Monad m => (a -> Put) -> ProcessT m a ByteString
+processPut f = auto $ Lazy.toStrict . runPut . f
+
+processGet :: Monad m => Get a -> ProcessT m ByteString (Either String a)
+processGet getA = processDecoder (runGetIncremental getA)
+
+processDecoder :: Monad m => Decoder a -> ProcessT m ByteString (Either String a)
+processDecoder decA = processDecoder' decA stopped
+
+processDecoder' :: Monad m => Decoder a -> ProcessT m ByteString (Either String a) -> ProcessT m ByteString (Either String a)
+processDecoder' decA r = MachineT . return $ Await f Refl stopped
+  where
+    f xs = case pushChunk decA xs of
+      Fail _ _ e -> yield' $ Left e
+      Done _ _ a -> yield' $ Right a
+      decA' -> processDecoder' decA' r
+    yield' ea = MachineT . return $ Yield ea r
+
+--------------------------------------------------------------------------
 
 -- |
 -- Construct a Plan that run a 'Get' until it fails or it return a parsed result.
@@ -31,7 +55,7 @@ import qualified Data.ByteString.Lazy as Lazy
 -- @
 -- -- construct the machine
 -- myMachine :: 'Machine' ('Stack' ByteString) (Either DecodingError Word8)
--- myMachine = 'construct' $ 'processGet' 'getWord8'
+-- myMachine = 'construct' $ 'stackGet' 'getWord8'
 --
 -- -- run the machine
 -- run $ 'stack' ('source' ["abc", "d", "efgh"]) myMachine
@@ -44,16 +68,16 @@ import qualified Data.ByteString.Lazy as Lazy
 -- --run m2 after m1
 -- myMachine = m1 <> m2
 --   where
---     m1 = construct $ processGet (getByteString 5)
---     m2 = construct $ processGet (getByteString 1)
+--     m1 = construct $ stackGet (getByteString 5)
+--     m2 = construct $ stackGet (getByteString 1)
 --
 -- run $ stack (source ["abc", "d", "efgh"]) myMachine
 -- > [Right "abcde",Right "f"]
 -- @
-processGet :: Get a -> Plan (Stack ByteString) (Either DecodingError a) ()
-processGet getA = _getPlan getA >>= pure . fmap snd >>= yield
+stackGet :: Get a -> Plan (Stack ByteString) (Either DecodingError a) ()
+stackGet getA = _getPlan getA >>= pure . fmap snd >>= yield
 
--- | Same as 'processGet' with additional information about the number
+-- | Same as 'stackGet' with additional information about the number
 -- of bytes consumed by the 'Get'
 processGetL :: Get a -> Plan (Stack ByteString) (Either DecodingError (ByteOffset, a)) ()
 processGetL getA = _getPlan getA >>= yield
@@ -65,24 +89,21 @@ processGetL getA = _getPlan getA >>= yield
 -- > [Right "ab",Right "cd",Right "ef",Right "gh"]
 -- @
 streamGet :: Get a -> Process ByteString (Either DecodingError a)
-streamGet getA = stack echo (repeatedly $ processGet getA)
+streamGet getA = stack echo (repeatedly $ stackGet getA)
 
 -- | Same as 'streamGet' with additional information about the number
 -- of bytes consumed by the 'Get'
 streamGetL :: Get a -> Process ByteString (Either DecodingError (ByteOffset, a))
 streamGetL getA = stack echo (repeatedly $ processGetL getA)
 
--- | Encode evrery input object with a 'Put'
-processPut :: Monad m => (a -> Put) -> ProcessT m a ByteString
-processPut f = auto $ Lazy.toStrict . runPut . f
-
 -- | A 'Get' decoding error.
 data DecodingError = DecodingError
-  { deConsumed :: {-# UNPACK #-} !ByteOffset
-    -- ^ Number of bytes consumed before the error
-  , deMessage  :: !String
-    -- ^ Error message
-  } deriving (Show, Read, Eq)
+  { -- | Number of bytes consumed before the error
+    deConsumed :: {-# UNPACK #-} !ByteOffset,
+    -- | Error message
+    deMessage :: !String
+  }
+  deriving (Show, Read, Eq)
 
 --------------------------------------------------------------------------
 -- Internals
@@ -92,8 +113,9 @@ _decoderPlan decA = do
   case pushChunk decA xs of
     Fail leftovers consumed e -> push leftovers >> pure (Left (DecodingError consumed e))
     Done leftovers consumed a -> push leftovers >> pure (Right (consumed, a))
-    decA'                     -> _decoderPlan decA'
+    decA' -> _decoderPlan decA'
 
 _getPlan :: Get a -> Plan (Stack ByteString) o (Either DecodingError (ByteOffset, a))
 _getPlan getA = _decoderPlan $ runGetIncremental getA
+
 --------------------------------------------------------------------------
